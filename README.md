@@ -5,7 +5,7 @@
 ![IBM Quantum](https://img.shields.io/badge/IBM%20Quantum-052FAD?style=flat-square&logo=ibm&logoColor=white)
 ![Qiskit](https://img.shields.io/badge/Qiskit-6929C4?style=flat-square&logoColor=white)
 ![Python 3.10](https://img.shields.io/badge/Python%203.10-1a1a2e?style=flat-square&logo=python&logoColor=4fc3f7)
-![scipy](https://img.shields.io/badge/scipy-COBYLA-4fc3f7?style=flat-square)
+![SciPy](https://img.shields.io/badge/SciPy-COBYLA-4fc3f7?style=flat-square)
 ![Day 4](https://img.shields.io/badge/Day%2004-Complete-4fc3f7?style=flat-square)
 ![Day 5](https://img.shields.io/badge/Day%2005-Loading...-555555?style=flat-square)
 
@@ -18,9 +18,8 @@
   ║                                                              ║
   ║   E(θ) = ⟨ψ(θ)|H|ψ(θ)⟩                                    ║
   ║                                                              ║
-  ║   Quantum prepares the state.                               ║
-  ║   Classical finds the minimum.                              ║
-  ║   Together — they solve what neither can alone.             ║
+  ║   Quantum computer  →  prepares the trial state             ║
+  ║   Classical computer →  minimizes the energy                ║
   ║                                                              ║
   ╚══════════════════════════════════════════════════════════════╝
 ```
@@ -31,187 +30,136 @@
 
 ---
 
-## What Did We Build Today?
+## Overview
 
-Today's notebook implements **VQE — Variational Quantum Eigensolver**.
+This notebook implements the **Variational Quantum Eigensolver (VQE)** — a hybrid quantum-classical algorithm for finding the ground state energy of a quantum system.
 
-It sounds intimidating. It isn't. Here's the honest explanation.
+The quantum computer prepares a parameterized trial state. A classical optimizer iteratively adjusts the circuit parameters to minimize the measured energy. When the energy converges, the ground state has been found.
 
----
-
-## Explain It Like I'm in High School
-
-Imagine you're trying to find the lowest point in a hilly landscape — blindfolded.
-
-You can't see the whole map. You can only feel whether you're going uphill or downhill at each step.
-
-**That's exactly what VQE does** — except the landscape is the energy of a quantum system, and the steps are taken by a classical optimizer adjusting the parameters of a quantum circuit.
-
-```
-The landscape   →  energy surface E(θ)
-Your position   →  current parameter θ
-Feeling uphill  →  energy going up
-Feeling downhill→  energy going down
-Lowest point    →  ground state energy
-```
-
-The quantum computer doesn't solve the whole problem. It just measures the energy at your current position. The classical computer decides which direction to step next.
-
-**Two computers. One problem. Neither could do it alone.**
+| Component | Role |
+|-----------|------|
+| Ansatz (RY gate) | Parameterized quantum circuit — prepares trial state |
+| Hamiltonian (H = Z) | Defines the system whose energy we minimize |
+| COBYLA optimizer | Classical algorithm that updates circuit parameters |
+| AerSimulator | Local quantum simulator (1000 shots per evaluation) |
 
 ---
 
-## Why Does This Matter?
+## Background
 
-Every molecule in the universe has a ground state — its lowest possible energy configuration.
+Every physical system has a ground state — the configuration of lowest energy. In quantum chemistry, knowing the ground state of a molecule determines its chemical behaviour, reaction rates, and binding properties.
 
-```
-If you know the ground state of a molecule:
-  → you know how it behaves chemically
-  → you know if a drug will bind to a protein
-  → you know if a material will conduct electricity
-  → you know reaction rates, stability, properties
-```
-
-Classical computers can simulate small molecules. For larger ones — the memory required grows as 2^N, where N is the number of electrons. That number becomes impossible fast.
+Classical simulation of quantum systems requires memory proportional to 2^N, where N is the number of particles. This grows beyond practical limits quickly.
 
 ```
-10 electrons  →       1,024 states
-20 electrons  →   1,048,576 states
-50 electrons  →  too large to store classically
+N = 10   →        1,024 amplitudes
+N = 20   →    1,048,576 amplitudes
+N = 50   →  2^50 amplitudes  (intractable classically)
 ```
 
-VQE sidesteps this. Instead of storing every state, it uses N qubits for N electrons and searches for the minimum energy directly.
+VQE addresses this by representing the quantum state directly on a quantum processor and offloading only the parameter optimization to a classical computer. The memory cost scales with N qubits, not 2^N.
 
 ---
 
-## The Three Moving Parts
+## Algorithm
 
-### 1 · Ansatz — The Quantum Circuit
+### Step 1 · Ansatz Construction
 
-The ansatz is a parameterized quantum circuit. Think of it as a machine with knobs.
-
-Each knob is an angle θ. Turning the knobs changes the quantum state the circuit prepares.
+A parameterized RY gate rotates the qubit by angle θ along the Y-axis of the Bloch Sphere:
 
 ```
-RY(θ)|0⟩  →  rotates the qubit by angle θ on the Bloch Sphere
+RY(θ)|0⟩  =  cos(θ/2)|0⟩ + sin(θ/2)|1⟩
 
-θ = 0    →  |0⟩  north pole    energy = +1.0
-θ = π/2  →  |+⟩  equator       energy =  0.0
-θ = π    →  |1⟩  south pole    energy = -1.0  ← ground state
+θ = 0      →  |0⟩   north pole   E = +1.0
+θ = π/2    →  |+⟩   equator      E =  0.0
+θ = π      →  |1⟩   south pole   E = -1.0  ← ground state
 ```
 
-We don't know which θ gives the minimum. That's what we're finding.
+### Step 2 · Energy Evaluation
 
----
-
-### 2 · Energy Measurement — The Expectation Value
-
-Once the circuit prepares a state, we measure its energy.
-
-For our Hamiltonian H = Z (Pauli-Z operator):
+For Hamiltonian H = Z (Pauli-Z), the expectation value is:
 
 ```
-Energy = probability(measuring |0⟩) - probability(measuring |1⟩)
-
-Qubit mostly |0⟩  →  energy close to +1.0
-Qubit mostly |1⟩  →  energy close to -1.0
+E(θ) = ⟨ψ(θ)|Z|ψ(θ)⟩
+     = P(|0⟩) - P(|1⟩)
 ```
 
-We run 1000 shots and count how often we get 0 vs 1. That ratio gives the energy at this θ.
+where P(|0⟩) and P(|1⟩) are measurement probabilities estimated over 1000 shots.
 
----
+### Step 3 · Classical Optimization
 
-### 3 · Classical Optimizer — COBYLA
-
-COBYLA is a classical optimization algorithm — the same family as gradient descent in machine learning.
-
-It receives the energy value from the quantum computer and decides how to update θ to reduce it.
+The COBYLA optimizer receives E(θ) and updates θ to reduce the energy. This loop continues until convergence.
 
 ```
-Iteration  1:  θ = 2.990  →  energy = -0.992
-Iteration  2:  θ adjusted →  energy shifts
-...
-Iteration 14:  θ = 3.177  →  energy = -1.0000  ← converged!
-```
-
-14 iterations. Exact ground state. Done.
-
----
-
-## The VQE Loop
-
-```
-  Initialize: random θ
-        │
-        ▼
-  Quantum circuit prepares |ψ(θ)⟩
-        │
-        ▼
-  Measure energy E = ⟨ψ|H|ψ⟩
-        │
-        ▼
-  COBYLA receives E
-        │
-        ▼
-  Update θ to reduce E ──────────────── (repeat)
-        │
-        ▼  (when E stops decreasing)
-
-  Ground state found!
+Initialize θ  (random)
+      │
+      ▼
+Prepare |ψ(θ)⟩  on quantum circuit
+      │
+      ▼
+Measure E(θ) = ⟨ψ|H|ψ⟩
+      │
+      ▼
+COBYLA updates θ
+      │
+      └──────────────────── repeat until ΔE < tolerance
+      │
+      ▼
+θ_optimal,  E_minimum  (ground state)
 ```
 
 ---
 
-## Experimental Results
+## Results
 
 ```
-Starting point (random):
-  θ = 2.990 radians
-  E = -0.992
+Initial state (random θ):
+  θ₀  =  2.990 rad
+  E₀  =  −0.992
 
-After optimization (14 iterations):
-  θ = 3.177 radians  (≈ π = 3.1416)
-  E = -1.0000        ← exact ground state
-
-Converged: True
+Final state (after optimization):
+  θ*  =  3.177 rad  (≈ π)
+  E*  =  −1.0000
+  Iterations   :  14
+  Converged    :  True
+  |E* − E_exact| < 0.001
 ```
 
-The optimizer found θ ≈ π — which rotates the qubit to the south pole |1⟩. That's the state with minimum energy for H = Z. The physics and the math agree completely.
+The optimizer recovered θ ≈ π, placing the qubit at the south pole of the Bloch Sphere — the exact ground state of H = Z.
 
 ---
 
-## Convergence Curve
+## Convergence
 
 ```
-Energy vs Iteration:
-
- 0.0  │
-      │  ╲
--0.5  │   ╲      ╱╲
-      │    ╲    ╱   ╲
--1.0  │─────╲──╱─────╲────────────────● ← converged
-      │      ╲╱       ╲______________/
-      └──────────────────────────────────
-      0       4        8       12     14
-                    Iteration
+  0.0 ┤
+      │╲
+ −0.5 ┤ ╲     ╱╲
+      │  ╲   ╱  ╲
+ −1.0 ┤───╲─╱────╲────────────────── ● E* = −1.0000
+      │    ╲╱     ╲________________/
+      └──────────────────────────────────────────────
+      0          5          10         14
+                        Iteration
 ```
 
-The curve drops, oscillates briefly as the optimizer explores, then locks onto -1.0. That oscillation isn't failure — it's the optimizer probing the landscape before committing to a direction.
+Initial oscillation reflects the optimizer probing the energy landscape. Convergence to the exact minimum occurs at iteration 14.
 
 ---
 
-## What This Connects To
+## Connection to Real Applications
 
-| Today (simple) | Real quantum chemistry |
-|----------------|----------------------|
-| 1 qubit · H = Z | Dozens of qubits · molecular Hamiltonian |
-| RY ansatz | UCCSD ansatz (chemistry-inspired) |
-| COBYLA | SPSA · Adam · gradient-based methods |
-| Energy = -1.0 | Ground state of H₂ · LiH · BeH₂ |
-| 14 iterations | Hundreds of iterations |
+The structure of today's experiment maps directly to quantum chemistry:
 
-The structure is identical. The scale is different.
+| This notebook | Quantum chemistry |
+|---------------|-------------------|
+| 1 qubit · H = Z | N qubits · molecular Hamiltonian |
+| RY ansatz | UCCSD / hardware-efficient ansatz |
+| COBYLA | SPSA · L-BFGS-B · gradient-based methods |
+| E* = −1.0 | Ground state of H₂ · LiH · BeH₂ |
+| 14 iterations | Hundreds to thousands of iterations |
+
+The algorithm is identical. The scale and Hamiltonian change.
 
 ---
 
@@ -219,7 +167,7 @@ The structure is identical. The scale is different.
 
 ```python
 qiskit          >= 1.0.0    # quantum circuit construction
-qiskit-aer      >= 0.17.2   # local simulation
+qiskit-aer      >= 0.17.2   # local statevector simulation
 scipy           >= 1.10.0   # COBYLA classical optimizer
 numpy           >= 1.24.0   # numerical operations
 matplotlib      >= 3.7.0    # convergence visualization
@@ -275,13 +223,10 @@ Day 20  ──  ·   Final push · 50+ applications · LinkedIn article
 
 ---
 
-## A Note on Where This Is Going
+## Security
 
-VQE is one half of the variational approach to quantum computing.
-
-Day 5 covers QAOA — the same idea applied to optimisation problems rather than chemistry. Different problem. Same loop. Same intuition.
-
-By Day 7, both run on real IBM quantum hardware — not a simulator. Real noise. Real qubits. Real results.
+- Credentials stored in `.env`, excluded from version control via `.gitignore`
+- All results reproducible locally using AerSimulator — no IBM token required
 
 ---
 
